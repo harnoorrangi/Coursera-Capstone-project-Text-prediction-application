@@ -1,0 +1,268 @@
+---
+title: "Capstone Project Report"
+author: "Harnoor Rangi"
+date: '2017-08-03'
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Synopsis
+
+This milestone report is a part of Capstone project from John Hopkins University for the Data Science Specialization. The goal of this capstone project is to apply data science in the area of natural language processing and predictive modeling to:
+
+* prepare and explore a large corpus of english language texts obtained from text sites, blogs and twitter
+* build a web based application that allows user to input a word in natural language and the application predicts the next word. Like a predictive keyboard.
+
+This milestone report displays the results of exploratory data analysis performed on the given datasets and outlines the methodology that will be used to build the eventual app and alogoritham 
+
+##Dataset
+This exercise uses the files named LOCALE.blogs.txt where LOCALE is the each of the four locales en_US, de_DE, ru_RU and fi_FI. The data is from a corpus called HC Corpora. Three large datasets in zip format were downloaded and unzipped. The datasets were three natural language text files from the news sites, blogs, and twitter. 
+
+## Reading the datasets into RStudio
+
+To read the data into Rstudio, I have used read_lines() function from the readr library. 
+
+```{r}
+setwd("~/Applications/OneDrive/Harnoor/Projects/Capstone-Coursera/Dataset/final/en_US")
+library(readr)
+contwitter<-file("en_US.twitter.txt")
+conblogs<-file("en_US.blogs.txt")
+connews<-file("en_US.news.txt")
+
+#reading the data using read_lines function
+
+twitter<-read_lines(contwitter)
+blogs<-read_lines(conblogs)
+news<-read_lines(connews)
+
+```
+
+## Summary statistics of the files
+
+First of all, some quick summary statistics were done to get the feel of the data. This summary statistics gives the size of each file, the number of lines and the number of words in each of them. 
+
+```{r}
+#Calculating size of each file
+sizetwitter<-round(file.info("en_US.twitter.txt")$size/1024^2)
+sizeblogs<-round(file.info("en_US.blogs.txt")$size/1024^2)
+sizenews<-round(file.info("en_US.news.txt")$size/1024^2)
+
+#wordcount using stringi library
+library(stringi)
+blog_words<-sum(stri_count_words(blogs))
+twitter_words<-sum(stri_count_words(twitter))
+news_words<-sum(stri_count_words(news))
+
+#creating summary table
+library(knitr)
+summarytable<-data.frame(Name= c("News","Blogs","Twitter"),FileSize_Mb=c(sizenews,sizeblogs,sizetwitter),Number_of_lines=c(length(news),length(blogs),length(twitter)),Number_of_words=c(news_words,blog_words,twitter_words))
+kable(summarytable,caption = "Table1: Summary of the datasets")
+```
+
+## Creating data samples
+
+As you can see from the table above, the datasets are quite big. So, to improve the processing speed, I have decided to narrow down the datasets. 
+
+* random samplingof 5% of each dataset is performed
+
+
+```{r}
+set.seed(12112)
+blogs_training<-blogs[sample(seq_len(length(blogs)),size = floor(length(blogs)*0.05))]
+news_training<-news[sample(seq_len(length(news)),size = floor(length(news)*0.05))]
+twitter_training<-twitter[sample(seq_len(length(twitter)),size = floor(length(twitter)*0.05))]
+
+# Calculating number of rows of the training datasets
+length(news_training)
+length(blogs_training)
+length(twitter_training)
+```
+
+
+#Clearning the dataset
+
+## Tokenization and Profanity Filtering with stop words
+
+Computers can’t directly understand text like humans can.Humans automatically break down sentences into units of meaning.
+For natural language processing, we have to first explicitly show the computer how to do this, in a process called tokenization. For tokenization, I have used the tidytext package. The unnest_tokens function in this package created a tibble with one-token-per-document-per-row. I have decided to create a function that will take the dataset as an input and will:
+
+* convert all letters to lowercase
+* delete all special characters and punctuations
+* delete all numbers
+* create a new tibble 
+* remove all bad language words (Profanity filtering) : list of bad words were obtained from this link https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/blob/master/en
+
+```{r message=FALSE}
+library(dplyr)
+library(tidytext)
+token_clean_data <- function(x)
+{
+  #convert to dataframe
+  input<-data_frame(text=x)
+  
+  #Profanity filtering
+  bad_words<-data_frame(word = read_lines('https://raw.githubusercontent.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/master/en'))
+  
+  #Tokenization
+  clean_data<-input %>% 
+    mutate(linenumber = row_number()) %>%           # to annotate linenumber quantity to keep track of lines in original format
+    unnest_tokens(output = 'word', input = 'text', token = 'words', to_lower = TRUE) %>%  # splits lines to seperate words and covert to lower case
+    group_by(linenumber) %>% 
+    mutate(wordnumber = row_number()) %>%           # numbers the words in each line
+    filter(grepl("[^a-z'-.]", word) == FALSE) %>%   # only allow words with letters a-z and '-.
+    anti_join(bad_words, by = 'word') %>%       # eliminates naughty words
+    arrange(linenumber, wordnumber) %>%             # resorts dataframe
+    select(linenumber, wordnumber, word) %>%        # rearrange columns
+    group_by(linenumber) %>%                        # group by linesnumbers
+    summarise(text = paste(word, collapse=" "))     # rearrange lines 
+  # return tidy dataset   
+  return(clean_data)
+}
+
+#getting clean,tokenized and tidy datasets
+
+blogs_tidy<-token_clean_data(blogs_training)
+news_tidy<-token_clean_data(news_training)
+twitter_tidy<-token_clean_data(twitter_training)
+```
+
+#Exploratory Data Analysis
+In this part, we are going to explore the data. We will try to understand the distribution of words, relationship between a pair of words, most frequently used words etc
+ 
+##Frequent words/ 1-grams
+First of all we will take a look at the top 20 ranked words by word count in each of the three datasets
+
+```{r message=FALSE}
+library(wordcloud)
+library(ggplot2)
+library(plotly)
+#Blogs
+blogs_tidy_1gram<-blogs_tidy %>% unnest_tokens(word,text) 
+blogs_top20<-blogs_tidy_1gram %>% count(word, sort = TRUE) %>% 
+    mutate(freq = n/as.integer(count(blogs_tidy_1gram))) %>%
+    arrange(desc(n)) %>%
+    top_n(20)
+g<-ggplot(data=blogs_top20,aes(blogs_top20$word,blogs_top20$n))
+p<-g+geom_col(color="black",aes(fill=blogs_top20$n))+labs(title="20 most used words in the Blogs dataset",x="Words",y="Number of occurences")+theme_classic()+scale_fill_distiller(palette = "Blues") +guides(fill = "none")+coord_flip()
+
+ggplotly(p)
+
+#News
+
+news_tidy_1gram<-news_tidy %>% unnest_tokens(word,text)
+news_top20<-news_tidy_1gram %>% count(word, sort = TRUE) %>% 
+    mutate(freq = n/as.integer(count(news_tidy_1gram))) %>%
+   top_n(20) 
+g<-ggplot(data=news_top20,aes(x=news_top20$word,y=news_top20$n))
+p<-g+geom_col(color="black",aes(fill=news_top20$n))+labs(title="20 most used words in the News dataset",x="Words",y="Number of occurences")+ theme_classic()+scale_fill_distiller(palette = "Blues") +guides(fill = "none")+coord_flip()
+
+ggplotly(p)
+
+
+#Twitter
+twitter_tidy_1gram<-twitter_tidy %>% unnest_tokens(word,text)
+twitter_top20<-twitter_tidy_1gram %>% count(word, sort = TRUE) %>% 
+    mutate(freq = n/as.integer(count(twitter_tidy_1gram))) %>%
+    head(20) 
+g<-ggplot(data=twitter_top20,aes(x=twitter_top20$word,y=twitter_top20$n))
+p<-g+geom_col(color="black",aes(fill=twitter_top20$n))+labs(title="20 most used words in the Twitter dataset",x="Words",y="Number of occurences")+ theme_classic()+scale_fill_distiller(palette = "Blues") +guides(fill = "none")+coord_flip() 
+
+ggplotly(p)
+```
+
+As you can see from the graphs that the most commonly used word in all three datasets was "the". Remember that these datasets still contain all the stop words. To give you a example I have drawn a graph below with stop words removed from the news dataset. We will need the stop words in our predictive application, so I was decided not to remove them from the datasets.
+
+### Optional: Top 20 words in the news dataset without stop words
+```{r message=FALSE,warning = FALSE}
+news_tidy_1gram_stop<-news_tidy %>% unnest_tokens(word,text) %>% anti_join(stop_words) 
+news_stop_top20<-news_tidy_1gram_stop %>% count(word, sort = TRUE) %>% 
+    mutate(freq = n/as.integer(count(news_tidy_1gram_stop))) %>%
+   head(20) 
+g<-ggplot(data=news_stop_top20,aes(x=news_stop_top20$word,y=news_stop_top20$n))
+p<-g+geom_col(color="black",aes(fill=news_stop_top20$n))+labs(title="20 most used words in the News dataset without stop words",x="Words",y="Number of occurences")+ theme_classic()+scale_fill_distiller(palette = "Blues") +guides(fill = "none")+coord_flip() 
+
+ggplotly(p)
+```
+
+##Creating a training corpus
+For the following part of the analysis, I am going to combine the three tidy datasets to create a training corpus dataset
+
+```{r}
+train_corpus <- bind_rows("en_US_blogs.txt" = blogs_tidy, "en_US_news.txt" = news_tidy, "en_US_twitter.txt" = twitter_tidy, .id = "file")
+train_corpus<-train_corpus %>% mutate(file = as.factor(file))
+```
+
+## Creating N-Grams
+We need to create N-Grams to build a predictive model. An n-gram is a contiguous sequence of n items from a given sequence of text or speech.
+
+```{r}
+#creating 1grams
+ngrams1<-train_corpus %>% unnest_tokens(output='word',input='text')
+
+#creating bigrams
+ngrams2<-train_corpus %>% unnest_tokens(output='bigram',input='text',token="ngrams",n=2)
+
+#creating trigrams
+ngrams3<-train_corpus %>% unnest_tokens(output='trigram',input='text',token="ngrams",n=3)
+
+#creating fourgrams
+ngrams4<-train_corpus %>% unnest_tokens(output='fourgram',input='text',token="ngrams",n=4)
+
+```
+
+## Top 100 frequently occuring words in the training corpus
+```{r message=FALSE,warning=FALSE}
+ngrams1 %>%
+count(word) %>%
+  mutate(freq = n/as.integer(count(ngrams1))) %>% 
+    with(wordcloud(word, freq, random.order = FALSE, max.words = 100, colors = brewer.pal(8, "Dark2")))
+
+# Top 20 occuring words in the corpus
+ngrams1 %>%
+  count(word,sort=TRUE) %>%
+  head(20) %>%
+  ggplot(aes(x=word,y=n,fill=n))+geom_bar(stat = "identity")+ labs(title="20 most frequently occuring words in the corpus",x="Words",y="Number of occurences")+ theme_classic()+scale_fill_distiller(palette = "Blues") +guides(fill = "none")+coord_flip() 
+  
+```
+
+
+## 100 Most frequently occuring bigrams
+```{r message=FALSE,warning=FALSE}
+ngrams2 %>% 
+  count(bigram) %>%
+  mutate(freq = n/as.integer(count(ngrams2))) %>% 
+    with(wordcloud(bigram, freq, random.order = FALSE, max.words = 100, colors = brewer.pal(12, "Paired")))
+
+# Top 20 occuring bigram in the corpus
+ngrams2 %>%
+  count(bigram,sort=TRUE) %>%
+  head(20) %>%
+  ggplot(aes(x=bigram,y=n,fill=n))+geom_bar(stat = "identity")+ labs(title="20 most frequently occuring bigrams in the corpus",x="Bigram",y="Number of occurences")+ theme_classic()+scale_fill_distiller(palette = "Blues") +guides(fill = "none")+coord_flip() 
+```
+
+## 100 Most frequently occuring trigrams
+```{r message=FALSE,warning = FALSE}
+ngrams3 %>% 
+  count(trigram) %>%
+  mutate(freq = n/as.integer(count(ngrams3))) %>% 
+    with(wordcloud(trigram, freq, random.order = FALSE, max.words = 100, colors = brewer.pal(12, "Paired")))
+
+#Top 20 occuring trigram in the corpus
+ngrams3 %>%
+  count(trigram,sort=TRUE) %>%
+  head(20) %>%
+  ggplot(aes(x=trigram,y=n,fill=n))+geom_bar(stat = "identity")+ labs(title="20 most frequently occuring trigrams in the corpus",x="Trigram",y="Number of occurences")+ theme_classic()+scale_fill_distiller(palette = "Blues") +guides(fill = "none")+coord_flip() 
+```
+
+#Next Goals
+In the next steps, the n-grams (4,3,2 and one word) will be used to build a predictive model.That means for any given word (or two, three, n words), the prediction model should be able to predict the next word based on the more probable possibilities.
+
+After the building of predictive model, the three files will be used to test the accuracy of the model.
+
+The last implementation step is to build a shiny app that will use the prediction model. 
